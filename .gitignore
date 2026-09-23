@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Helios — .gitignore
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Build directories ─────────────────────────────────────────────────────────
+build/
+build-*/
+out/
+cmake-build-*/
+
+# ── Compiled binaries ─────────────────────────────────────────────────────────
+*.exe
+*.dll
+*.lib
+*.a
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+
+# ── CMake generated ───────────────────────────────────────────────────────────
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+_deps/
+
+# ── Visual Studio ─────────────────────────────────────────────────────────────
+.vs/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+*.suo
+*.ncb
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+*.user
+ipch/
+
+# ── VS Code ───────────────────────────────────────────────────────────────────
+.vscode/
+
+# ── CLion ─────────────────────────────────────────────────────────────────────
+.idea/
+
+# ── Ninja ─────────────────────────────────────────────────────────────────────
+.ninja_deps
+.ninja_log
+
+# ── Windows ───────────────────────────────────────────────────────────────────
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ── macOS (if collaborating cross-platform) ───────────────────────────────────
+.DS_Store
+__MACOSX/
+
+# ── Test / benchmark output ───────────────────────────────────────────────────
+*.log
+*.csv
+*.json.out
+benchmarks/results/
+
+# ── Editor swap files ─────────────────────────────────────────────────────────
+*.swp
+*.swo
+*~
