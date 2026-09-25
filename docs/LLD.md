@@ -86,16 +86,153 @@ for each line:
 
 ---
 
-## Phase 1 — TcpServer (to be filled in)
+## Phase 1 — TCP Networking Layer
 
-*This section will be written during Phase 1 implementation.*
+### Socket lifecycle
 
-Components to design:
-- `TcpServer` — socket lifecycle, bind, listen, accept loop
-- `TcpConnection` — RAII socket wrapper, read/write helpers
-- Error handling strategy (Winsock error codes → human-readable strings)
+```
+socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+     │
+     ▼
+setsockopt(SO_REUSEADDR)   ← allow rapid restart without EADDRINUSE
+     │
+     ▼
+bind({INADDR_ANY, port})   ← attach to local IP:port
+     │
+     ▼
+listen(backlog=128)         ← OS begins queuing incoming connections
+     │
+     ▼  ┌─────────────────────────────────────────────────────┐
+     │  │ Accept loop                                         │
+     │  │   select(server_fd, timeout=500ms)                  │
+     │  │     → timeout? check running_, continue             │
+     │  │     → readable? proceed to accept()                 │
+     │  │   accept(server_fd, &client_addr)                   │
+     │  │     → returns new client_fd + peer address          │
+     │  │   TcpConnection conn{client_fd, client_addr}        │
+     │  │   handler(move(conn))                               │
+     │  └─────────────────────────────────────────────────────┘
+     │
+     ▼
+closesocket(server_fd)
+```
 
 ---
+
+### `helios::net::WinsockGuard`
+
+```
+┌───────────────────────────────────────────────┐
+│  WinsockGuard                                 │
+├───────────────────────────────────────────────┤
+│ - initialized_ : bool                         │
+│ - error_       : string                       │
+├───────────────────────────────────────────────┤
+│ + WinsockGuard()   → WSAStartup(MAKEWORD(2,2))│
+│ + ~WinsockGuard()  → WSACleanup()             │
+│ + ok()       : bool                           │
+│ + error_message() : string                    │
+├───────────────────────────────────────────────┤
+│ Non-copyable, non-movable                     │
+│ Exactly ONE per process                       │
+└───────────────────────────────────────────────┘
+```
+
+**Invariants:**
+- If `ok() == true`, all Winsock calls are valid until the guard is destroyed.
+- Destructor is a no-op if `ok() == false` (no double-cleanup).
+
+---
+
+### `helios::net::wsa_error_string(int code = -1)`
+
+Free function. Calls `FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM)` to convert a Winsock error code into a human-readable string.  
+Default argument `-1` → calls `WSAGetLastError()` internally.
+
+Output format: `"Connection refused (WSA error 10061)"`
+
+---
+
+### `helios::net::TcpConnection`
+
+```
+┌──────────────────────────────────────────────────┐
+│  TcpConnection                                   │
+├──────────────────────────────────────────────────┤
+│ - fd_        : SOCKET      (INVALID_SOCKET when  │
+│ - peer_addr_ : sockaddr_in  moved-from)          │
+├──────────────────────────────────────────────────┤
+│ + TcpConnection(fd, peer_addr)                   │
+│     → setsockopt(SO_RCVTIMEO, 5000ms)            │
+│ + ~TcpConnection()                               │
+│     → shutdown(SD_SEND) + closesocket()          │
+│                                                  │
+│ + read(buf, len)  : int      ← recv()            │
+│ + write(data, len): bool     ← send() loop       │
+│ + write(string_view): bool                       │
+│ + read_request(max=8192): string                 │
+│     → reads until \r\n\r\n or max_bytes          │
+│ + peer_address() : string    ← "IP:port"         │
+│ + is_valid()     : bool                          │
+│ + fd()           : SOCKET                        │
+├──────────────────────────────────────────────────┤
+│ Non-copyable / Movable                           │
+│ Move sets fd_ = INVALID_SOCKET (no double-close) │
+└──────────────────────────────────────────────────┘
+```
+
+**Partial send contract:**
+`write()` loops until all `len` bytes are sent. A single `send()` call may transmit fewer bytes than requested when the kernel send buffer is full.
+
+**Receive timeout:**
+`SO_RCVTIMEO = 5000ms` is set in the constructor. Prevents a slow client from monopolising the server's thread.
+
+---
+
+### `helios::net::TcpServer`
+
+```
+┌──────────────────────────────────────────────────┐
+│  TcpServer                                       │
+├──────────────────────────────────────────────────┤
+│ - server_fd_ : SOCKET                            │
+│ - port_      : int                               │
+│ - backlog_   : int = 128                         │
+│ - running_   : atomic<bool>                      │
+├──────────────────────────────────────────────────┤
+│ + TcpServer(port, backlog=128)                   │
+│ + ~TcpServer() → closesocket(server_fd_)         │
+│                                                  │
+│ + start() : bool                                 │
+│     → socket() → setsockopt() → bind() → listen()│
+│ + run(ConnectionHandler handler) : void          │
+│     → select loop → accept → handler(move(conn)) │
+│ + stop() : void        ← atomic, signal-safe     │
+│ + is_running() : bool                            │
+│ + port() : int                                   │
+├──────────────────────────────────────────────────┤
+│ ConnectionHandler = std::function<void(TcpConnection)> │
+│ Non-copyable, non-movable                        │
+└──────────────────────────────────────────────────┘
+```
+
+**`running_` atomicity:**
+`stop()` writes `running_ = false` via `std::atomic::store()`.  
+`run()` reads `running_` via `std::atomic::load()`.  
+`std::atomic` provides the memory ordering guarantee needed for cross-thread/signal-handler visibility.
+
+**Phase 3 upgrade path (documented now, implemented later):**
+```cpp
+// Phase 1 (current):
+handler(std::move(conn));   // synchronous — blocks the accept loop
+
+// Phase 3 (future):
+thread_pool_.submit(std::move(conn));  // async — accept loop continues immediately
+```
+The TcpServer public API does not change between Phase 1 and Phase 3.
+
+---
+
 
 ## Phase 2 — HTTP Layer (to be filled in)
 

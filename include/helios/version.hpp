@@ -19,7 +19,7 @@ constexpr int VERSION_PATCH = 0;
 constexpr const char* VERSION_STRING = "0.1.0";
 
 // Phase identifier — updated each time a new phase is completed.
-constexpr int    PHASE         = 0;
-constexpr const char* PHASE_NAME = "Project Foundation";
+constexpr int    PHASE         = 1;
+constexpr const char* PHASE_NAME = "Basic TCP Server";
 
 } // namespace helios

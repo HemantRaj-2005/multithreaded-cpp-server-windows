@@ -1,28 +1,32 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  src/CMakeLists.txt
-#  Defines two targets:
-#    helios_core — interface/static library (linked by helios and helios_tests)
-#    helios      — the server executable
 #
-#  Phase 0: helios_core is an INTERFACE library because there are no .cpp files
-#  yet (Logger and Config are header-only). From Phase 1 onward it becomes a
-#  proper STATIC library as we add tcp_server.cpp, parser.cpp, etc.
-#  To upgrade: change INTERFACE → STATIC and add source files to the list.
+#  Phase 0: helios_core was an INTERFACE library (header-only components).
+#  Phase 1: helios_core becomes a STATIC library now that we have .cpp files.
+#
+#  To add a new source file in future phases:
+#    Just append it to the helios_core source list below.
+#    No other CMake changes needed.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── helios_core — INTERFACE library (Phase 0) ─────────────────────────────────
-# An INTERFACE target has no compiled object files but propagates its
-# INTERFACE_INCLUDE_DIRECTORIES and INTERFACE_LINK_LIBRARIES to every consumer.
-add_library(helios_core INTERFACE)
+# ── helios_core — static library ─────────────────────────────────────────────
+# All non-main server code lives here.
+# Both helios (executable) and helios_tests link against helios_core.
+# This means tests can exercise any class without pulling in main().
+add_library(helios_core STATIC
+    # Phase 1 — TCP networking
+    net/tcp_connection.cpp
+    net/tcp_server.cpp
+)
 
 target_include_directories(helios_core
-    INTERFACE
+    PUBLIC
         ${CMAKE_SOURCE_DIR}/include
 )
 
 target_link_libraries(helios_core
-    INTERFACE
-        ${HELIOS_PLATFORM_LIBS}   # ws2_32 on Windows; empty elsewhere
+    PUBLIC
+        ${HELIOS_PLATFORM_LIBS}   # ws2_32 on Windows
 )
 
 # ── helios — server executable ────────────────────────────────────────────────
