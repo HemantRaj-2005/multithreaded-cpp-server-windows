@@ -7,7 +7,7 @@
 
 ## Current Phase
 
-**Phase 2 — HTTP Abstraction Layer** ✅  
+**Phase 3 — Multithreaded Thread Pool** ✅  
 `v0.1.0`
 
 ---
@@ -62,7 +62,7 @@ cmake --build build-mingw
 
 ---
 
-## Expected Output (Phase 2)
+## Expected Output (Phase 3)
 
 ```
   +------------------------------------------------+
@@ -72,20 +72,20 @@ cmake --build build-mingw
   |                                                |
   +------------------------------------------------+
 
-[2026-09-29 22:17:00] [INFO ] [main] Config loaded from: config/server.conf
-[2026-09-29 22:17:00] [INFO ] [main] ====================================================
-[2026-09-29 22:17:00] [INFO ] [main]   Version   : 0.1.0
-[2026-09-29 22:17:00] [INFO ] [main]   Phase     : 2 — HTTP Abstraction Layer
-[2026-09-29 22:17:00] [INFO ] [main]   Log level : INFO
-[2026-09-29 22:17:00] [INFO ] [main] ====================================================
-[2026-09-29 22:17:00] [INFO ] [main] Winsock 2.2 initialised
-[2026-09-29 22:17:00] [INFO ] [main] Router initialised — 3 route(s) registered
-[2026-09-29 22:17:00] [INFO ] [main] Listening →  http://localhost:8080/
-[2026-09-29 22:17:00] [INFO ] [main] Press Ctrl+C to stop.
-[2026-09-29 22:17:05] [INFO ] [http] 127.0.0.1:54321  GET / HTTP/1.1 200
-[2026-09-29 22:17:06] [INFO ] [http] 127.0.0.1:54322  GET /health HTTP/1.1 200
-[2026-09-29 22:17:07] [INFO ] [http] 127.0.0.1:54323  GET /hello HTTP/1.1 200
-[2026-09-29 22:17:08] [INFO ] [http] 127.0.0.1:54324  GET /missing HTTP/1.1 404
+[2026-09-29 22:48:00] [INFO ] [main] Config loaded from: config/server.conf
+[2026-09-29 22:48:00] [INFO ] [main] ====================================================
+[2026-09-29 22:48:00] [INFO ] [main]   Version        : 0.1.0
+[2026-09-29 22:48:00] [INFO ] [main]   Phase          : 3 — Multithreaded Thread Pool
+[2026-09-29 22:48:00] [INFO ] [main]   Log level      : INFO
+[2026-09-29 22:48:00] [INFO ] [main]   Worker threads : 4
+[2026-09-29 22:48:00] [INFO ] [main] ====================================================
+[2026-09-29 22:48:00] [INFO ] [main] Winsock 2.2 initialised
+[2026-09-29 22:48:00] [INFO ] [main] Router initialised — 3 route(s) registered
+[2026-09-29 22:48:00] [INFO ] [ThreadPool] Started 4 worker thread(s)
+[2026-09-29 22:48:00] [INFO ] [main] Listening →  http://localhost:8080/
+[2026-09-29 22:48:00] [INFO ] [main] Press Ctrl+C to stop.
+[2026-09-29 22:48:05] [INFO ] [http] 127.0.0.1:54321  GET /hello HTTP/1.1 200
+[2026-09-29 22:48:05] [INFO ] [http] 127.0.0.1:54322  GET /health HTTP/1.1 200
 ```
 
 ---
@@ -181,7 +181,7 @@ level = INFO   # TRACE | DEBUG | INFO | WARN | ERROR | FATAL
 | 0 | Project Foundation | ✅ |
 | 1 | Basic Single-Threaded TCP Server | ✅ |
 | 2 | HTTP Abstraction Layer | ✅ |
-| 3 | Multithreaded Thread Pool | 🔲 |
+| 3 | Multithreaded Thread Pool | ✅ |
 | 4 | Routing and Application Layer | 🔲 |
 | 5 | Connection Management | 🔲 |
 | 6 | Logging and Observability | 🔲 |

@@ -1,7 +1,7 @@
 # Helios HTTP Server — Low-Level Design (LLD)
 
 > **Status:** Living document — updated at the end of each phase.  
-> **Current phase:** 2 — HTTP Abstraction Layer
+> **Current phase:** 3 — Multithreaded Thread Pool
 
 This document dives below the HLD into specific class designs, data structures, algorithms, and API contracts for each component.
 
@@ -392,15 +392,127 @@ route registration is required.
 
 ---
 
-## Phase 3 — ThreadPool (to be filled in)
+## Phase 3 — Multithreaded Thread Pool
 
-*This section will be written during Phase 3 implementation.*
+### `helios::concurrency::WorkQueue<T>`
 
-Topics:
-- `WorkQueue<T>` — generic queue with mutex + condition variable
-- `ThreadPool` — fixed thread count, graceful shutdown protocol
-- Why we chose N threads = `std::thread::hardware_concurrency()`
-- Shutdown sequence: poison pill vs. atomic stop flag
+```
+┌─────────────────────────────────────────────────┐
+│  WorkQueue<T>                                    │
+├─────────────────────────────────────────────────┤
+│ - mutex_   : mutable std::mutex                 │
+│ - cv_      : std::condition_variable            │
+│ - queue_   : std::deque<T>                      │
+│ - stopped_ : bool = false                       │
+├─────────────────────────────────────────────────┤
+│ + push(T item) : void      ← notify_one         │
+│ + pop()       : optional<T>← blocks until item  │
+│ + stop()      : void       ← notify_all, sets   │
+│                              stopped_ = true     │
+│ + empty() / size() / is_stopped() : const       │
+└─────────────────────────────────────────────────┘
+```
+
+**Data structure choice: `std::deque<T>`**
+
+`std::deque` gives O(1) amortised `push_back` and O(1) `pop_front` without
+the capacity-doubling copies of `std::vector`.  For a FIFO task queue this
+is optimal.  A `std::queue<T>` (which uses `std::deque` internally) was
+considered but the raw deque is slightly more readable in this context.
+
+**Synchronisation: mutex + condition_variable**
+
+```
+push():                          pop():
+  lock(mutex_)                     unique_lock(mutex_)
+  if stopped_ → discard            cv_.wait(lock,
+  queue_.push_back(item)             []{!empty || stopped_})
+  unlock                           if empty → return nullopt
+  notify_one()      ← outside lock item = move(queue_.front())
+                                   queue_.pop_front()
+                                   return item
+```
+
+**Why `notify_one` not `notify_all` in `push()`:**
+Only one worker can consume one item.  `notify_all` would create the
+"thundering herd" — all workers wake, one wins, the rest pay a
+context-switch cost to go back to sleep.
+
+**Spurious wakeups:**
+`cv_.wait()` takes a predicate to handle spurious wakeups (real OS behaviour
+on Linux/Windows).  Without the predicate, a worker could wake with an empty
+queue and either spin or crash.
+
+**shutdown contract:**
+- `stop()` sets `stopped_ = true` under the lock, then calls `notify_all()`.
+- Workers wake, see `stopped_ == true` AND `queue_.empty()` → return `nullopt`.
+- Workers that are mid-processing are not interrupted; they finish their
+  current request, loop back, call `pop()`, and exit cleanly.
+
+---
+
+### `helios::concurrency::ThreadPool`
+
+```
+┌──────────────────────────────────────────────────┐
+│  ThreadPool                                      │
+├──────────────────────────────────────────────────┤
+│ - thread_count_ : unsigned int                  │
+│ - handler_      : ConnectionHandler             │
+│ - queue_        : WorkQueue<TcpConnection>      │
+│ - threads_      : vector<std::thread>           │
+├──────────────────────────────────────────────────┤
+│ + ThreadPool(num_threads, handler)              │
+│     → spawns num_threads worker threads         │
+│ + ~ThreadPool()                                 │
+│     → queue_.stop() + join all threads          │
+│ + submit(TcpConnection conn) : void             │
+│ + thread_count() / queue_size() : accessors     │
+└──────────────────────────────────────────────────┘
+```
+
+**Worker thread count heuristic:**
+```
+num_threads = max(1, config[server][worker_threads])
+           ?? hardware_concurrency()
+           ?? 4   (fallback if hardware_concurrency() == 0)
+```
+For I/O-bound workloads, 1× hardware_concurrency is a reasonable start.
+Phase 7 benchmarks will validate against 2× and 4× multipliers.
+
+**Graceful shutdown sequence (RAII):**
+```
+~ThreadPool() {
+    queue_.stop();           // (1) sets stopped_ = true, notify_all
+    for each thread:
+        t.join();            // (2) blocks until worker exits worker_loop()
+}                            // (3) handler_, queue_ safely destroyed
+```
+The join() guarantee: no worker accesses `handler_` or `queue_` after the
+destructor returns.  This is the critical property that prevents use-after-free.
+
+**Worker loop:**
+```cpp
+void worker_loop() {
+    while (true) {
+        auto conn = queue_.pop();    // blocks or returns nullopt
+        if (!conn) break;            // shutdown signal
+        try { handler_(move(*conn)); } catch (...) { LOG_ERROR; }
+    }
+}
+```
+Exception safety: any exception from `handler_` is caught and logged.
+The worker continues; the pool size stays constant.
+
+**Shared state inventory (Phase 3):**
+
+| State | Owner | Protection |
+|-------|-------|------------|
+| `WorkQueue::queue_` | `WorkQueue` | `std::mutex` + `condition_variable` |
+| `WorkQueue::stopped_` | `WorkQueue` | `std::mutex` |
+| `Logger::min_level_` | `Logger` singleton | `std::mutex` |
+| `Router::routes_` | `Router` | read-only after startup — no lock |
+| `TcpConnection::fd_` | per-worker exclusive | no sharing — no lock |
 
 ---
 
@@ -415,4 +527,4 @@ Each subsequent phase will add an LLD section here covering:
 
 ---
 
-*Last updated: Phase 2 — 2026-09-29*
+*Last updated: Phase 3 — 2026-09-29*

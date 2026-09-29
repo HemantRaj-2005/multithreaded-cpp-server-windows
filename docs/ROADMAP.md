@@ -62,16 +62,16 @@ Each phase builds on the previous. Every phase produces a **running binary** —
 
 ---
 
-### 🔲 Phase 3 — Multithreaded Server (Thread Pool)
+### ✅ Phase 3 — Multithreaded Server (Thread Pool)
 **Goal:** Handle concurrent connections via a worker thread pool.
 
-Deliverables:
-- `WorkQueue<T>` — mutex + condition_variable
-- `ThreadPool` — N worker threads
-- Accept thread feeds the queue
-- Workers process HTTP requests
-- Thread-safe Logger verified under concurrency
-- Graceful shutdown (drain queue, join threads)
+- [x] `WorkQueue<T>` — header-only template: `std::deque` + `std::mutex` + `std::condition_variable`
+- [x] `ThreadPool` — N worker threads (default: `hardware_concurrency()`; config-driven)
+- [x] Accept thread feeds the queue via `pool.submit(std::move(conn))`
+- [x] Workers call `handle_http_request(router, conn)` concurrently
+- [x] Thread-safe Logger verified (mutex-protected) under concurrent load
+- [x] Graceful shutdown: `stop()` → `notify_all()` → workers drain → `join_all()`
+- [x] Phase 3 test suite (8 new cases: WorkQueue + ThreadPool)
 
 **Key learning:** Threads vs. processes, context switching, race conditions, mutex, condition variables, RAII lock guards.
 
@@ -245,4 +245,4 @@ Deliverables:
 
 ---
 
-*Last updated: Phase 2 — 2026-09-29*
+*Last updated: Phase 3 — 2026-09-29*

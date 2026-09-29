@@ -25,6 +25,9 @@ add_library(helios_core STATIC
     http/http_response.cpp
     http/http_parser.cpp
     http/router.cpp
+
+    # Phase 3 — Thread pool
+    concurrency/thread_pool.cpp
 )
 
 target_include_directories(helios_core

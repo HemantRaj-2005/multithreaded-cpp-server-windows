@@ -19,7 +19,7 @@ constexpr int VERSION_PATCH = 0;
 constexpr const char* VERSION_STRING = "0.1.0";
 
 // Phase identifier — updated each time a new phase is completed.
-constexpr int    PHASE         = 2;
-constexpr const char* PHASE_NAME = "HTTP Abstraction Layer";
+constexpr int    PHASE         = 3;
+constexpr const char* PHASE_NAME = "Multithreaded Thread Pool";
 
 } // namespace helios

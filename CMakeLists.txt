@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helios HTTP Server
-#  Phase 0 — Project Foundation
+#  Phase 3 — Multithreaded Thread Pool
 #
 #  Build commands (from repo root):
 #    cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
@@ -39,12 +39,15 @@ else()
 endif()
 
 # ── Platform libraries ────────────────────────────────────────────────────────
-# Wire up Winsock now (Phase 0) so Phase 1 networking requires no CMake changes.
-# On non-Windows platforms this list stays empty.
+# Winsock (Phase 1+): ws2_32
+# Threads (Phase 3+): required for std::thread on MinGW (links libpthread).
+#   On MSVC, Threads::Threads is a no-op (std::thread uses Win32 threads natively).
+find_package(Threads REQUIRED)
 set(HELIOS_PLATFORM_LIBS "")
 if(WIN32)
     list(APPEND HELIOS_PLATFORM_LIBS ws2_32)
 endif()
+list(APPEND HELIOS_PLATFORM_LIBS Threads::Threads)
 
 # ── Global include path ───────────────────────────────────────────────────────
 # All targets get ${CMAKE_SOURCE_DIR}/include on their include path.
