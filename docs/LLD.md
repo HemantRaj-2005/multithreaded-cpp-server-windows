@@ -1,7 +1,7 @@
 # Helios HTTP Server — Low-Level Design (LLD)
 
 > **Status:** Living document — updated at the end of each phase.  
-> **Current phase:** 0 — Project Foundation
+> **Current phase:** 2 — HTTP Abstraction Layer
 
 This document dives below the HLD into specific class designs, data structures, algorithms, and API contracts for each component.
 
@@ -234,15 +234,161 @@ The TcpServer public API does not change between Phase 1 and Phase 3.
 ---
 
 
-## Phase 2 — HTTP Layer (to be filled in)
+## Phase 2 — HTTP Abstraction Layer
 
-*This section will be written during Phase 2 implementation.*
+### `helios::http::Method` (enum class)
 
-Components to design:
-- `HttpParser` — state machine for parsing HTTP/1.1 request lines, headers, body
-- `HttpRequest` — immutable value object
-- `HttpResponse` — builder pattern
-- `Router` — radix trie vs. `std::map` vs. linear scan; route parameter extraction
+```cpp
+enum class Method { GET, POST, PUT, DELETE_, HEAD, OPTIONS, UNKNOWN };
+```
+
+`DELETE_` avoids the Windows macro `DELETE`. `UNKNOWN` lets the router
+return 405 without crashing on unrecognised verbs.
+
+---
+
+### `helios::http::HttpRequest` (value object)
+
+```
+┌───────────────────────────────────────────────────┐
+│  HttpRequest                                      │
+├───────────────────────────────────────────────────┤
+│ - method_  : Method                               │
+│ - path_    : string                               │
+│ - version_ : string  ("HTTP/1.1")                 │
+│ - headers_ : map<string,string>  (names lowercased)│
+│ - body_    : string                               │
+├───────────────────────────────────────────────────┤
+│ + method() / path() / version() / body()          │
+│ + header(name) : string_view   ← case-insensitive │
+│ + content_length() : size_t                       │
+│ + summary() : string  ("GET /path HTTP/1.1")      │
+└───────────────────────────────────────────────────┘
+```
+
+**Immutability contract:** No setters. HttpParser is the only code that
+constructs a fully populated HttpRequest. After construction, the object
+is read-only, making it safe to share across threads in Phase 3 without
+locks.
+
+**Header name normalisation:** HttpParser lowercases all header names
+before storing them. `header("Content-Type")` and `header("content-type")`
+both work correctly.
+
+---
+
+### `helios::http::HttpResponse` (builder)
+
+```
+┌──────────────────────────────────────────────────┐
+│  HttpResponse                                    │
+├──────────────────────────────────────────────────┤
+│ - status_code_ : int                             │
+│ - reason_      : string                          │
+│ - body_        : string                          │
+│ - headers_     : map<string,string>              │
+├──────────────────────────────────────────────────┤
+│ + ok(body) / not_found() / bad_request() / …     │
+│ + header(name, value) : HttpResponse&  ← chaining│
+│ + content_type(ct)    : HttpResponse&            │
+│ + body(b)             : HttpResponse&            │
+│ + to_string()         : string  ← wire format    │
+└──────────────────────────────────────────────────┘
+```
+
+**Builder pattern:** Methods return `*this` for fluent chaining:
+```cpp
+HttpResponse::ok(json_body)
+    .content_type("application/json")
+    .header("X-Request-Id", id);
+```
+
+**`to_string()` contract:** Always emits:
+- Status line: `HTTP/1.1 STATUS REASON\r\n`
+- `Content-Type` (default: `text/plain`)
+- `Content-Length` (always computed from `body_.size()`)
+- `Connection: close` (Phase 2; changed to keep-alive in Phase 5)
+- `Server: Helios/VERSION_STRING`
+- Any additional headers
+- Blank line + body
+
+---
+
+### `helios::http::HttpParser` (stateless free-function wrapper)
+
+```
+┌──────────────────────────────────────────────────┐
+│  HttpParser (all static)                         │
+├──────────────────────────────────────────────────┤
+│ + parse(raw, req, max_body=1MB) : ParseResult    │
+├──────────────────────────────────────────────────┤
+│ - parse_request_line(...)                        │
+│ - parse_headers(...)                             │
+│ - trim(sv)  / to_lower(s)                        │
+└──────────────────────────────────────────────────┘
+```
+
+**Parse algorithm:**
+```
+Find "\r\n\r\n"               → splits headers / body
+First "\r\n" of header section → request line
+Remaining lines               → headers
+For each header:
+    split on first ':'
+    lowercase name; trim value
+If Content-Length > 0:
+    copy up to min(CL, max_body) bytes from body section
+Return ParseResult::OK or specific error code
+```
+
+**Error taxonomy:**
+
+| ParseResult | Cause |
+|-------------|-------|
+| `OK` | Fully parsed |
+| `EMPTY_REQUEST` | Client disconnected before sending data |
+| `MISSING_CRLF` | No `\r\n\r\n` found |
+| `INVALID_REQUEST_LINE` | Can't tokenise method/path/version |
+| `UNSUPPORTED_VERSION` | Not HTTP/1.0 or HTTP/1.1 |
+| `MALFORMED_HEADER` | A header line has no `:` |
+| `BODY_TOO_LARGE` | Content-Length > max_body_bytes |
+
+---
+
+### `helios::http::Router`
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Router                                             │
+├─────────────────────────────────────────────────────┤
+│ - routes_ : map<string, map<Method, Handler>>       │
+├─────────────────────────────────────────────────────┤
+│ + add_route(method, path, handler)                  │
+│ + get / post / put / del (shorthand)                │
+│ + dispatch(req) : HttpResponse                      │
+│ + route_count() : size_t                            │
+└─────────────────────────────────────────────────────┘
+```
+
+**Data structure choice:**
+
+`std::map<string, MethodMap>` gives O(log n) path lookup where n = number
+of distinct paths. With 3 routes this is effectively O(1). The Phase 4
+upgrade to path parameters (`/users/{id}`) will add a radix trie or
+regex-based lookup at that time.
+
+**Dispatch logic:**
+```
+Find path in routes_
+  → Not found?                  Return 404
+Find method in path's MethodMap
+  → Not found?                  Return 405 + Allow: {registered methods}
+  → Found?                      Call handler(req); return its HttpResponse
+```
+
+**Thread-safety:** Routes are registered once at startup. `dispatch()` is
+read-only and lock-free. Phase 4 adds `std::shared_mutex` if runtime
+route registration is required.
 
 ---
 
@@ -269,4 +415,4 @@ Each subsequent phase will add an LLD section here covering:
 
 ---
 
-*Last updated: Phase 0 — 2026-09-24*
+*Last updated: Phase 2 — 2026-09-29*

@@ -2,15 +2,20 @@
 //  src/main.cpp
 //  Helios HTTP Server — Entry Point
 //
-//  Startup sequence (updated each phase):
+//  Startup sequence:
 //    1. Print banner
 //    2. Load config
 //    3. Initialise logger
-//    4. Initialise Winsock        ← Phase 1
-//    5. Register Ctrl+C handler   ← Phase 1
-//    6. Create and start TcpServer ← Phase 1
-//    7. Run accept loop (blocking) ← Phase 1
-//    8. Graceful shutdown
+//    4. Initialise Winsock
+//    5. Register Ctrl+C handler
+//    6. Build the Router (register routes)
+//    7. Create and start TcpServer
+//    8. Run accept loop (blocking)
+//    9. Graceful shutdown
+//
+//  Phase 2 change:
+//    handle_http_request() now uses HttpParser → Router → HttpResponse
+//    instead of the hardcoded "Hello from Helios!" stub from Phase 1.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // winsock2.h MUST precede any Windows headers to avoid winsock.h conflicts.
@@ -25,6 +30,10 @@
 #include "helios/net/winsock_init.hpp"
 #include "helios/net/tcp_connection.hpp"
 #include "helios/net/tcp_server.hpp"
+#include "helios/http/http_parser.hpp"
+#include "helios/http/http_request.hpp"
+#include "helios/http/http_response.hpp"
+#include "helios/http/router.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -48,8 +57,6 @@ helios::net::TcpServer* g_server = nullptr;
 
 // Called by Windows on Ctrl+C, Ctrl+Break, or console close.
 // Runs on a separate OS-managed thread — only call async-signal-safe code.
-// std::atomic::store() is async-signal-safe; LOG_INFO uses a mutex which is
-// technically not, but is acceptable for a clean shutdown notification.
 BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
     if (ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT) {
         LOG_INFO("main", "Shutdown signal received — stopping server...");
@@ -84,62 +91,111 @@ helios::LogLevel parse_log_level(const std::string& s) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  handle_http_request
+//  build_router()
 //
-//  Phase 1 implementation:
-//    • Read raw request bytes until end of headers
-//    • Log the request line ("GET / HTTP/1.1")
-//    • Send a hardcoded HTTP/1.1 200 response
+//  Register all Phase 2 routes.  The router is built once during startup
+//  and then passed (by const ref) into the connection handler closure.
 //
-//  Phase 2 upgrade: replace with HttpParser → Router → Handler dispatch.
+//  Routes registered here:
+//    GET /       → HTML homepage
+//    GET /health → plain-text health check (used by load balancers in Phase 13)
+//    GET /hello  → plain-text greeting
 //
-//  The function takes TcpConnection by value (moved in).
-//  When this function returns, conn's destructor fires → socket is closed.
+//  Phase 4 will add: GET /users, GET /users/{id}, POST /users, DELETE /users/{id}
 // ─────────────────────────────────────────────────────────────────────────────
-void handle_http_request(helios::net::TcpConnection conn) {
+helios::http::Router build_router() {
+    using namespace helios::http;
+    Router router;
+
+    // ── GET / ─────────────────────────────────────────────────────────────
+    router.get("/", [](const HttpRequest&) {
+        const std::string body =
+            "<!DOCTYPE html>\r\n"
+            "<html><head><title>Helios HTTP Server</title></head>\r\n"
+            "<body>\r\n"
+            "<h1>Helios HTTP Server</h1>\r\n"
+            "<p>Phase 2 — HTTP Abstraction Layer</p>\r\n"
+            "<ul>\r\n"
+            "  <li><a href=\"/health\">/health</a></li>\r\n"
+            "  <li><a href=\"/hello\">/hello</a></li>\r\n"
+            "</ul>\r\n"
+            "</body></html>\r\n";
+        return HttpResponse::ok(body)
+               .content_type("text/html; charset=utf-8");
+    });
+
+    // ── GET /health ───────────────────────────────────────────────────────
+    // Standard health-check endpoint.
+    // Returns 200 + JSON body when healthy.
+    // Phase 13 will use this for load-balancer health probes.
+    router.get("/health", [](const HttpRequest&) {
+        const std::string body =
+            "{\"status\":\"ok\","
+            "\"server\":\"Helios\","
+            "\"version\":\"" + std::string(helios::VERSION_STRING) + "\"}\r\n";
+        return HttpResponse::ok(body)
+               .content_type("application/json");
+    });
+
+    // ── GET /hello ────────────────────────────────────────────────────────
+    router.get("/hello", [](const HttpRequest&) {
+        return HttpResponse::ok("Hello from Helios!\r\n")
+               .content_type("text/plain");
+    });
+
+    return router;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  handle_http_request()
+//
+//  Phase 2 implementation:
+//    1. Read raw bytes (TcpConnection::read_request — unchanged from Phase 1).
+//    2. Parse with HttpParser → HttpRequest.
+//    3. Dispatch through Router → HttpResponse.
+//    4. Serialise and write back over the socket.
+//    5. Log: "GET /hello 200" or "GET /bad 404".
+//
+//  The router is captured by const ref — no copies, no overhead.
+//  The connection is taken by value (RAII move — closes socket on return).
+// ─────────────────────────────────────────────────────────────────────────────
+void handle_http_request(helios::http::Router const& router,
+                         helios::net::TcpConnection  conn) {
+    using namespace helios::http;
+
     const std::string peer = conn.peer_address();
 
-    // Read until \r\n\r\n (end of HTTP request headers)
+    // ── Read raw request bytes ────────────────────────────────────────────
     const std::string raw = conn.read_request();
-
     if (raw.empty()) {
         LOG_WARN("http", peer + " — empty request (client disconnected or timed out)");
         return;
     }
 
-    // Extract and log the request line (e.g. "GET /hello HTTP/1.1")
-    const auto line_end = raw.find("\r\n");
-    const std::string request_line =
-        (line_end != std::string::npos) ? raw.substr(0, line_end) : raw;
-    LOG_INFO("http", peer + "  " + request_line);
+    // ── Parse ─────────────────────────────────────────────────────────────
+    HttpRequest  req;
+    const ParseResult parse_result = HttpParser::parse(raw, req);
 
-    // ── Build the HTTP/1.1 response ───────────────────────────────────────
-    //
-    // HTTP/1.1 response format (RFC 7230):
-    //
-    //   HTTP/1.1 200 OK\r\n          ← Status-Line: version SP status SP reason
-    //   Content-Type: text/plain\r\n ← Entity headers
-    //   Content-Length: 20\r\n       ← MUST be exact byte count of body
-    //   Connection: close\r\n        ← Phase 1: no keep-alive
-    //   Server: Helios/1.0.0\r\n     ← Server identification
-    //   \r\n                         ← Blank line: end of headers
-    //   Hello from Helios!\r\n       ← Body (exactly Content-Length bytes)
-    //
-    // Connection: close tells the client we will close the socket after
-    // sending this response.  HTTP Keep-Alive (reusing the connection for
-    // multiple requests) is implemented in Phase 5.
-    const std::string body = "Hello from Helios!\r\n";
+    HttpResponse res;
 
-    const std::string response =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: " + std::to_string(body.size()) + "\r\n"
-        "Connection: close\r\n"
-        "Server: Helios/" + std::string(helios::VERSION_STRING) + "\r\n"
-        "\r\n" +
-        body;
+    if (parse_result != ParseResult::OK) {
+        // Parsing failed — return 400 Bad Request.
+        const std::string detail = parse_result_to_string(parse_result);
+        LOG_WARN("http", peer + " — parse error: " + detail);
+        res = HttpResponse::bad_request("400 Bad Request: " + detail + "\r\n");
+    } else {
+        // ── Dispatch ──────────────────────────────────────────────────────
+        res = router.dispatch(req);
 
-    if (!conn.write(response)) {
+        // ── Access log ────────────────────────────────────────────────────
+        // Format: "127.0.0.1:54321  GET /hello 200"
+        LOG_INFO("http",
+                 peer + "  " + req.summary() +
+                 " " + std::to_string(res.status_code()));
+    }
+
+    // ── Write response ────────────────────────────────────────────────────
+    if (!conn.write(res.to_string())) {
         LOG_WARN("http", peer + " — write failed (client may have disconnected)");
     }
 
@@ -181,8 +237,6 @@ int main(int argc, char* argv[]) {
     LOG_INFO("main", sep);
 
     // ── 4. Winsock ────────────────────────────────────────────────────────
-    // WinsockGuard constructor calls WSAStartup(2.2).
-    // Its destructor calls WSACleanup() — runs automatically when main() exits.
     helios::net::WinsockGuard winsock;
     if (!winsock.ok()) {
         LOG_FATAL("main", "Winsock init failed: " + winsock.error_message());
@@ -193,7 +247,12 @@ int main(int argc, char* argv[]) {
     // ── 5. Ctrl+C handler ─────────────────────────────────────────────────
     ::SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
 
-    // ── 6. Create and start server ────────────────────────────────────────
+    // ── 6. Build router ───────────────────────────────────────────────────
+    helios::http::Router router = build_router();
+    LOG_INFO("main", "Router initialised — " +
+             std::to_string(router.route_count()) + " route(s) registered");
+
+    // ── 7. Create and start server ────────────────────────────────────────
     const int port = cfg.get_int("server", "port", 8080);
     helios::net::TcpServer server{port};
     g_server = &server;  // expose to signal handler (non-owning)
@@ -208,10 +267,18 @@ int main(int argc, char* argv[]) {
     LOG_INFO("main", "Listening →  http://localhost:" + std::to_string(port) + "/");
     LOG_INFO("main", "Press Ctrl+C to stop.");
 
-    // ── 7. Accept loop (blocks until stop() is called) ────────────────────
-    server.run(handle_http_request);
+    // ── 8. Accept loop (blocks until stop() is called) ────────────────────
+    //
+    // The lambda captures router by const ref.  This is safe because:
+    //   • router outlives the accept loop (both live in main's stack frame).
+    //   • In Phase 3, the router will be captured by const ref inside each
+    //     worker thread closure — still valid as long as we don't mutate
+    //     the route table at runtime (which we don't until Phase 4).
+    server.run([&router](helios::net::TcpConnection conn) {
+        handle_http_request(router, std::move(conn));
+    });
 
-    // ── 8. Shutdown ───────────────────────────────────────────────────────
+    // ── 9. Shutdown ───────────────────────────────────────────────────────
     g_server = nullptr;  // null before server goes out of scope
     LOG_INFO("main", "Helios stopped. Goodbye.");
 

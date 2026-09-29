@@ -34,29 +34,29 @@ Each phase builds on the previous. Every phase produces a **running binary** —
 
 ---
 
-### 🔲 Phase 1 — Basic Single-Threaded TCP Server
+### ✅ Phase 1 — Basic Single-Threaded TCP Server
 **Goal:** Accept a TCP connection and return an HTTP response. No concurrency.
 
-Deliverables:
-- `TcpServer` class (create socket, bind, listen, accept)
-- `TcpConnection` RAII wrapper
-- Raw HTTP response: `HTTP/1.1 200 OK\r\nContent-Length: ...\r\n\r\nHello`
-- Winsock error handling
-- Graceful `Ctrl+C` shutdown
+- [x] `TcpServer` class (create socket, bind, listen, accept)
+- [x] `TcpConnection` RAII wrapper
+- [x] Raw HTTP response: `HTTP/1.1 200 OK\r\nContent-Length: ...\r\n\r\nHello`
+- [x] Winsock error handling
+- [x] Graceful `Ctrl+C` shutdown
 
 **Key learning:** TCP socket programming, Winsock API, HTTP wire format.
 
 ---
 
-### 🔲 Phase 2 — HTTP Abstraction Layer
+### 🔄 Phase 2 — HTTP Abstraction Layer
 **Goal:** Separate networking from HTTP protocol handling.
 
-Deliverables:
-- `HttpParser` — state machine for request line, headers, body
-- `HttpRequest` value object
-- `HttpResponse` builder
-- `Router` with static routes
-- Routes: `GET /`, `GET /health`, `GET /hello`
+- [x] `HttpRequest` — immutable value object (method, path, version, headers, body)
+- [x] `HttpParser` — state machine: request line → headers → body
+- [x] `HttpResponse` — builder pattern with fluent API and wire serialisation
+- [x] `Router` — `map<path, map<Method, Handler>>` dispatch, 404/405
+- [x] Routes: `GET /`, `GET /health`, `GET /hello`
+- [x] Parse error → 400 Bad Request
+- [x] Phase 2 test suite (14 new test cases)
 
 **Key learning:** HTTP/1.1 protocol, parser design, routing, separation of concerns.
 
@@ -245,4 +245,4 @@ Deliverables:
 
 ---
 
-*Last updated: Phase 0 — 2026-09-24*
+*Last updated: Phase 2 — 2026-09-29*
